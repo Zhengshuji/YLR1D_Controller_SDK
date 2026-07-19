@@ -1,0 +1,7 @@
+string image_path
+int8 arm_index
+float32[] position
+---
+float32[] terminal
+int32 result
+string str_rt

@@ -1,0 +1,12 @@
+# Goal 消息
+int8 arm_index
+float32[] joints
+float32 vel
+
+---
+# Result 消息
+int32 result
+
+---
+# Feedback 消息
+float32 current_state

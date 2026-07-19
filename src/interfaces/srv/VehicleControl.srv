@@ -1,0 +1,6 @@
+int32 mode
+float32 vehicle_x_vel
+float32 vehicle_y_vel
+float32 vehicle_z_vel
+---
+int32 result
