@@ -21,8 +21,8 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-# 安装启动文件到指定目录
-install(DIRECTORY launch
+# 安装启动文件与配置到指定目录
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}/
 )
 

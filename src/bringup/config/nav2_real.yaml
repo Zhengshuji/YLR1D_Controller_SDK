@@ -1,0 +1,224 @@
+# nav2 参数（规划层 P2，2026-08-15，快速验证用——裁剪自 nav2 demo 最小集）。
+# 全向底盘（is_holonomic），雷达输入 /perception/sensors/radar/scan。
+# 早期不追求最优，能跑通导航即可（规划层设计 §三 简化清单）。
+
+# ── 全局代价地图 ──
+# nav2 Humble costmap 参数需双层命名空间（global_costmap.global_costmap.ros__parameters，
+# 与 nav2_bringup 官方结构一致）；单层会被忽略而用默认值（robot_base_frame=base_link）。
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      global_frame: map
+      robot_base_frame: Link_Base
+      update_frequency: 1.0
+      transform_tolerance: 1.0
+      publish_frequency: 0.5
+      robot_radius: 0.45
+      inflation_radius: 0.55
+      plugins: ["static_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      global_frame: odom
+      robot_base_frame: Link_Base
+      update_frequency: 5.0
+      transform_tolerance: 1.0
+      rolling_window: true          # 跟随机器人滚动窗口（默认固定窗口，EKF 漂移后机器人出界）
+      publish_frequency: 2.0
+      robot_radius: 0.45
+      inflation_radius: 0.55
+      plugins: ["obstacle_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /perception/sensors/radar/scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+# ── 全局规划器（NavFn）──
+planner_server:
+  ros__parameters:
+    use_sim_time: False
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+# ── 局部规划器（DWB，全向）──
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    controller_plugins: ["FollowPath"]
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugin: "goal_checker"
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: True
+      min_vel_x: 0.0
+      max_vel_x: 0.5
+      min_vel_y: 0.0
+      max_vel_y: 0.5
+      max_vel_theta: 1.0
+      min_speed_xy: 0.0
+      max_speed_xy: 0.5
+      min_speed_theta: 0.0
+      max_speed_theta: 1.0
+      acc_lim_x: 2.5
+      acc_lim_y: 2.5
+      acc_lim_theta: 3.2
+      decel_lim_x: -2.5
+      decel_lim_y: -2.5
+      decel_lim_theta: -3.2
+      vx_samples: 20
+      vy_samples: 20
+      vtheta_samples: 20
+      sim_time: 1.7
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      xy_goal_tolerance: 0.25
+      trans_stopped_velocity: 0.25
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+# ── 进度/目标检查器（controller_server 顶层插件；缺失时实跑警告
+#    "No goal checker was specified"，FollowPath 完成判定退化）──
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+      stateful: True
+
+# ── BT 导航器（NavigateToPose 入口）──
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: Link_Base
+    odom_topic: /odom
+    # BT action 节点等 goal ACK 的超时（ms）：nav2 默认 20ms，WSL 重负载下
+    # planner/behavior 响应常超 20ms → 导航必失败；放宽到 20s（实测直连 ACK ~0.7s）。
+    default_server_timeout: 20000
+    # BT tick 周期（ms）：默认 10ms=100Hz 在重负载下 tick rate 超限刷屏；放宽到 10Hz。
+    bt_loop_duration: 100
+    default_bt_xml_filename: "navigate_to_pose_w_replanning_and_recovery.xml"
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+# ── BT navigator 服务/动作 服务器名（nav2_bringup 惯例）──
+bt_navigator_navigate_to_pose:
+  ros__parameters:
+    use_sim_time: False
+
+# ── 行为服务器（recovery 用）──
+behavior_server:
+  ros__parameters:
+    use_sim_time: False
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    global_frame: map
+    robot_base_frame: Link_Base
+    plugin_lib_names:
+      - nav2_spin_behavior
+      - nav2_back_up_behavior
+      - nav2_wait_behavior
+
+# ── 平滑器（可选，先禁）──
+smoother_server:
+  ros__parameters:
+    use_sim_time: False
+    max_velocity: [0.5, 0.5, 1.0]
+    max_acceleration: [2.5, 2.5, 3.2]
+    max_jerk: [4.0, 4.0, 4.0]
+    max_deviation: 0.25
+
+# ── 速度平滑器（先直通：最小/最大都放宽）──
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.5, 1.0]
+    min_velocity: [-0.5, -0.5, -1.0]
+    max_accel: [2.5, 2.5, 3.2]
+    max_decel: [-2.5, -2.5, -3.2]
+    max_jerk: [4.0, 4.0, 4.0]
+    min_jerk: [-4.0, -4.0, -4.0]
+
+# ── 碰撞监控（可选，先禁）──
+collision_monitor:
+  ros__parameters:
+    use_sim_time: False

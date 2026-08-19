@@ -9,7 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(robot_interfaces REQUIRED) 
+find_package(robot_interfaces REQUIRED)
 
 
 find_package(cv_bridge REQUIRED)
@@ -69,6 +69,7 @@ install(TARGETS test_node
 find_library(SYSTEMLAYER_LIB NAMES "libSystemLayer.so" PATHS ${SDK_ROOT}/lib REQUIRED)
 find_library(CAMDEV_LIB NAMES "libCamDev_Client.so" PATHS ${SDK_ROOT}/lib REQUIRED)
 find_library(ROBSOFT_LIB NAMES "libRobSoft.so" PATHS ${SDK_ROOT}/lib REQUIRED)
+find_library(ROBOTCONSYS_CLIENT_LIB NAMES "libRobotConSys_Client.so" PATHS ${SDK_ROOT}/lib REQUIRED)
 
 # camDemo 添加可执行文件
 add_executable(camDemo src/camDemo.cpp)
@@ -99,9 +100,9 @@ install(TARGETS camDemo
 
 # ---------- 机械臂测试节点 ----------
 add_executable(armDemo src/armDemo.cpp)
-ament_target_dependencies(armDemo rclcpp)
-target_link_libraries(armDemo 
-    ${SYSTEMLAYER_LIB} 
+ament_target_dependencies(armDemo rclcpp robot_interfaces)
+target_link_libraries(armDemo
+    ${SYSTEMLAYER_LIB}
     ${ROBSOFT_LIB}
     pthread dl rt)
 set_target_properties(armDemo PROPERTIES
@@ -112,8 +113,8 @@ install(TARGETS armDemo DESTINATION lib/${PROJECT_NAME})
 
 # ---------- 移动底盘测试节点 ----------
 add_executable(vehicleDemo src/vehicleDemo.cpp)
-ament_target_dependencies(vehicleDemo rclcpp)
-target_link_libraries(vehicleDemo 
+ament_target_dependencies(vehicleDemo rclcpp robot_interfaces)
+target_link_libraries(vehicleDemo
     ${SYSTEMLAYER_LIB}
     ${ROBSOFT_LIB}
     pthread dl rt)

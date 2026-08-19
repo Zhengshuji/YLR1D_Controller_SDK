@@ -15,7 +15,7 @@ public:
     CamDevNode() : Node("camdev_node")
     {
         // 声明参数（允许运行时修改）
-        this->declare_parameter<std::string>("server_ip", "127.0.0.1");
+        this->declare_parameter<std::string>("server_ip", "172.22.224.1");
         this->declare_parameter<int>("server_port", 8201);
         this->declare_parameter<bool>("color_mode", true);  // true: 彩色, false: 深度
 
