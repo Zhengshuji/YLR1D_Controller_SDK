@@ -1,0 +1,19 @@
+log
+build
+install
+
+
+# 临时文件
+tmpRobotConSys
+tmpTCPConDev
+tmp
+
+# 忽略其他文件
+External_lib
+
+
+# 忽略暂时没用的功能包、节点等
+src/common_utils
+src/robot_package/src/test_node.cpp
+src/gui
+src/simulate
