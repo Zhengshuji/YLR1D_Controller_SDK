@@ -66,3 +66,27 @@ ros2 launch bringup real_robot_manual.launch.py   # 手动 3 action（无 moveit
 | `ylr1d_plan_moveit/moveit_goal_server.cpp` | 段超时 240s | ✅ 大轨迹必需 |
 | `ylr1d_hmi/moveit_panel.*` | 已**回退**（恢复姿态输入原样） | 回退完成 |
 | `bringup/real_robot_nav.launch.py` | 已**删除**（键盘） | 回退完成 |
+---
+
+## 七、最终状态（2026-08-22）
+
+本整改文档为过程记录。最终状态：
+
+- **全部实现并实测通过**：驱动层（底盘/臂/躯干/夹爪）、传感器层（30 关节 + 死推里程计）、moveit（关节/姿态/躯干瞄准/夹爪）、导航（NavigateToPose）、**决策层**（Mission → BT → plan_client → 规划层 → 驱动 → SDK，outcome=0）；
+- **三个根因已修复并入仓库**（线程亲和 / 单位制 / 无速度反馈死推），cp 同步无需重打；
+- **决策层已接入**：`ylr1d_decision` 从 ros2_ylr1d_controller_ws cp 进子模块，`decision.launch.py use_sim_time:=false` 叠在真机栈上；
+- 不构建 `ylr1d_bringup`/`ylr1d_test`（新版依赖仿真层 plant/control，真机用自带 bringup + 决策层独立 launch）；
+- 当前使用手册：`README.md`；最终设计：`real_robot_driver_design.md`；对比：`real_vs_gazebo.md`。
+
+### 决策层可视化与一键 bringup（2026-08-22 补充）
+
+- **一键启动**：`real_robot_decision.launch.py` = `real_robot_nav_core`（基线+odom_pub+map_server+nav2+bridge）+ moveit + `decision.launch.py` + `hmi_decision.launch.py` + 单一决策 rviz——等价框架 `bringup_decision`（去掉 Gazebo/转译层）；导航核心抽成 `real_robot_nav_core.launch.py` 供 `real_robot_nav` / `real_robot_decision` 共用（原 nav 里 6 个 nav Node 直接内联，未抽包）。
+- **rviz 启动修复（include 参数污染，陷阱 16 实战）**：`moveit.launch.py` / `hmi_decision.launch.py` 都声明同名 `rviz` 参数（默认 false），被 include 时在共享 context **覆盖**顶层 `rviz:=true` → 决策 rviz 条件失效（log 里完全没有 rviz2 输出）。照框架 `bringup_decision`：**决策 rviz 节点放顶层、先于所有声明 rviz 的 include**；hmi_decision 内部 rviz 恒关；`moveit_rviz` 多余参数已删（"只要一个 rviz"）。
+- **顺带修复**：`real_robot.launch.py` 末尾残留 `_include("ylr1d_hmi", "hmi_plan.launch.py")`（`_include` 未定义，hmi_plan 本属 nav launch）——install 旧副本掩盖，rebuild 后必炸，已删，基线恢复纯净。
+- **三任务实测（真机栈 + SDK 仿真）**：
+  | 任务 | 结果 | 注意 |
+  |---|---|---|
+  | arm_move (1, +x5cm) | ✅ outcome=0 | 左臂末端 TF 实测 x:-0.393→-0.345 |
+  | torso_aim (0.6,0,1.2) | ✅ outcome=0 | 瞄点须可达：**(1.0,0,0.6) 在倾角盲区**（ray_error=0.065>3cm 判不可达）；自检可达点见 `real_robot_driver_design.md` |
+  | base_move (0.6m) | ✅ outcome=0 | 真移，odom→(0.42,0.02)；**<0.25m 目标因 nav2 容差假成功不动**，增量建议 ≥0.5m |
+

@@ -1,102 +1,95 @@
-# 真机驱动 + 感知设计 v2（以 YLR1D_Controller 为框架，复用主体）
+# 真机驱动 + 感知设计（最终版 v3）
 
-> **v2 架构决策（用户确认）**：YLR1D_Controller 大部分框架保留复用——
-> ① 感知层 = 新写**传感器层**（主动接收 SDK 信息，映射成框架关节名发给 `ylr1d_perception`）；
-> ② 驱动层 = 新写 **robot_driver**，平替 `ylr1d_translate` 及以下，对外暴露与转译层同语义的 3 个 action，直调 SDK；
-> ③ 规划层（ylr1d_plan_nav / ylr1d_plan_moveit）+ HMI（ylr1d_hmi）原样复用。
-> 范围：底座运动 / 机械臂关节空间运动 / 夹爪 + 轮式里程计 / 关节两个传感器。三阶段全部完成 ✅
+> 以 YLR1D_Controller（`src/ThirdParty/YLR1D_Controller`，同步自 `ros2_ylr1d_controller_ws`）为框架，对真实机器人（双机械臂 + 全向底盘 + 夹爪 + 躯干，RobotConSys 控制器 @ `172.22.224.1:8109`）实现控制。
+> 已全部实现并实测通过：驱动层 / 传感器层 / moveit / 导航 / **决策层**。
+> 真机 vs Gazebo 仿真对比见 `real_vs_gazebo.md`；README 为使用手册。
 
 ---
 
-## 1. 总体架构（v2，三阶段完成）
+## 一、架构（最终）
 
 ```
-[规划层 ylr1d_plan_nav / ylr1d_plan_moveit]（✅ 原样复用）
-        |  nav：/cmd_vel -> cmd_vel_bridge -> /chassis_move
-        |  moveit：/plan/moveit/moveit_move(action) -> moveit_goal_server -> moveit_bridge -> /arm_move + /gripper_move
+[决策层 ylr1d_decision]（复用）
+   /decision/mission -> BT(bt_xml/*.xml) -> plan_client
+   -> /navigate_to_pose + /plan/moveit/moveit_move
         v
-[驱动层 robot_driver]（✅ 平替 translate + control + algorithm + plant）
-        |  直调 SDK：setMotionControl / moveABSJoint / setClawState / setServoState
-        |  轮询 SDK 状态 -> /sensors/arm_raw、/sensors/vehicle_raw
+[规划层 ylr1d_plan_nav / ylr1d_plan_moveit + HMI ylr1d_hmi]（复用）
+   moveit: /plan/moveit/moveit_move -> goal_server -> moveit_bridge -> /arm_move + /gripper_move
+   nav:    NavigateToPose -> nav2 -> /cmd_vel -> cmd_vel_bridge -> /chassis_move
         v
-RobotConSys 服务端（真机 / 模拟器 @172.22.224.1:8109）
+[驱动层 robot_driver]（平替 translate+control+algorithm+plant）
+   3 action（ylr1d_translate 类型）+ 内联主线程 SDK 调用 + 度/弧度换算 + 三伺服使能
+        v
+RobotConSys 服务端（真机 / SDK 仿真）
         ^
-        |  状态轮询
-[传感器层 robot_sensors]（✅ 主动接收 SDK 信息）
-        |  SDK 数据 -> 框架 30 关节名 -> /joint_states
+[传感器层 robot_sensors] -> 30 框架关节 /joint_states + odom_pub(/odom + TF)
         v
-[感知层 ylr1d_perception]（✅ 原样复用）
-        |  /perception/sensors/joint_states、/perception/joint_state、/perception/odometry
-        v
-[HMI ylr1d_hmi]（✅ 原样复用：hmi_moveit 规划面板 / hmi_translate 手动面板）
+[感知层 ylr1d_perception]（复用）-> /perception/*
 ```
 
-## 2. 启动方式（✅ 已验证）
+## 二、驱动层 robot_driver
 
-### 一键启动：规划层 moveit + HMI（推荐）
+- **3 action**（复用 ylr1d_translate 类型）：`/chassis_move`（mode/direction/speed/duration）、`/arm_move`（part+positions）、`/gripper_move`（part+open）；
+- **SDK 调用约束（实测根因）**：
+  1. **线程亲和**：运动指令（moveABSJoint + waitMotionCMDFinish）必须在**发起连接的线程**内联执行（worker 线程发会被忽略/卡死）；
+  2. **单位制**：SDK 臂关节=**度**、末端=mm/度 → `robot_sdk.hpp` 边界换算（下发 rad→deg、上报 deg→rad、mm→m）；
+  3. **伺服使能**：三组伺服（ARM_1/2/3）必须 setServoState(ON)，否则 moveABSJoint 返回 -1；
+- **结构映射**（SDK 探测）：ARM_1 左臂(7) / ARM_2 右臂(7) / **ARM_3 躯干(4)**；`part 0→ARM_3 / 1→ARM_1 / 2→ARM_2`；
+- **底盘**：平移用 `MOVE_XY`（全向 vx/vy，NORMAL 只认 vx/wz）、旋转 `ROTATE`、停车 NORMAL(0,0,0)；`cmd_vel_bridge` 速度放大 1.0、wz 直通；
+- 健康 `/health`、启动回零（home_on_start，默认关）、零位移幂等。
+
+## 三、传感器层 robot_sensors
+
+- `sensor_bridge`：/sensors/arm_raw（arm0/1/2）+ /sensors/vehicle_raw → 30 框架关节 `/joint_states`（转向=servo_pos、轮=wheel_vel、臂=ARM_1/2、**躯干=ARM_3**、夹指=开合映射）；
+- `odom_pub`：**命令速度死推**（SDK getVehicleState 不回报实际速度）→ `/odom` + odom→Link_Base TF。
+
+## 四、里程计（实测根因）
+
+- SDK `getVehicleState` 恒 0（无底盘速度反馈）→ 用**最后命令速度**（驱动记录）积分；
+- 仿真执行忠实于命令，死推与实动一致；真机需按实际标定比例。
+
+## 五、moveit / 导航 / 决策层
+
+- **moveit**：模型与框架一致，`moveit.launch.py use_sim_time:=false`；move_group WSL 启动慢（1-2 分钟）→ bridge 服务等待重试 180s；躯干大轨迹（~178° 瞄准）→ goal_server 段超时 240s；
+- **导航**：`real_robot_nav_core.launch.py` = 基线 + odom_pub + map_server(nav_test) + 静态 map=odom + nav2(planner/controller/bt/behavior) + cmd_vel_bridge（无 HMI，供 nav / decision 两 bringup 共用）；无激光 → 无 amcl；`real_robot_nav.launch.py` = nav_core + hmi_plan；
+- **决策层**：`decision.launch.py use_sim_time:=false`（composition 三节点 mission_server/decision/plan_client）；Mission 任务 → BT → plan_client → 规划层两个 action；
+  一键启动 **`real_robot_decision.launch.py`** = nav_core + moveit + decision + 决策 HMI + 单一决策 rviz（等价框架 `bringup_decision`，去掉 Gazebo/转译层；rviz 节点须在顶层、先于声明同名 rviz 参数的 include 启动——陷阱 16 参数污染）。
+
+## 六、验证结果（SDK 仿真实测）
+
+| 链路 | 结果 |
+|---|---|
+| 驱动层 | ✅ 底盘(平移/旋转/横移)/臂/躯干/夹爪全 SUCCEEDED；/joint_states 30 关节 20-33Hz |
+| moveit | ✅ 臂关节/姿态(IK)/躯干瞄准/夹爪全链路 |
+| nav | ✅ NavigateToPose SUCCESS |
+| 决策层 | ✅ 三任务全 outcome=0：arm_move（左臂 +x 5cm）/ torso_aim（瞄 (0.6,0,1.2)）/ base_move（0.6m，odom→(0.42,0.02)） |
+
+## 七、框架改动清单（最小集）
+
+| 文件 | 改动 |
+|---|---|
+| `ylr1d_plan_moveit/moveit_bridge.cpp` | 服务等待 180s 重试（已并入仓库） |
+| `ylr1d_plan_moveit/moveit_goal_server.cpp` | 段超时 240s（已并入仓库） |
+| `ylr1d_plan_nav/cmd_vel_bridge.cpp` | 速度放大 1.0 + wz 直通（已并入仓库） |
+| `ylr1d_hmi`（moveit_panel） | 曾加关节输入，已**回退** |
+
+## 八、启动
 
 ```bash
+# 1. 决策层全栈一键启动（推荐）：nav_core + moveit + decision + 决策 HMI + 单一决策 rviz
+ros2 launch bringup real_robot_decision.launch.py      # 等 1-2 分钟 move_group + nav2 就绪
+
+# 2. 导航（hmi_plan）
+ros2 launch bringup real_robot_nav.launch.py
+
+# 3. moveit + HMI（单臂规划，决策层单独叠）
 ros2 launch bringup real_robot_moveit.launch.py
-```
+ros2 launch ylr1d_decision decision.launch.py use_sim_time:=false
 
-等价：`real_robot.launch.py`（驱动+传感器+感知+rsp）+ `moveit.launch.py`（rviz:=true, use_sim_time:=false）+ `hmi_moveit.launch.py`。
-实测节点/action（模拟器在线时）：
-
-```
-node list:  robot_driver, sensor_bridge, joint_state_receiver, joint_state_estimator,
-            control_feedback_guard, sensor_dispatch, move_group, moveit_bridge,
-            moveit_goal_server, ylr1d_hmi_moveit, robot_state_publisher ...
-action list: /arm_move  /chassis_move  /gripper_move     （驱动层）
-             /plan/moveit/moveit_move                    （规划层）
-```
-
-**注意**：move_group 在 WSL 下初始化 ~90s，HMI 窗口出现后等日志出现
-"You can start planning now!" 再发目标。
-
-### 手动控制（无需 moveit）
-
-```bash
+# 4. 手动控制（3 action 直发）
 ros2 launch bringup real_robot_manual.launch.py
 ```
 
-等价：`real_robot.launch.py` + `hmi_translate.launch.py`（转译面板直发
-/chassis_move /arm_move /gripper_move 到驱动层，手动控底座/臂/夹爪）。
-
-### 分层启动（调试用）
-
-```bash
-ros2 launch bringup real_robot.launch.py                      # 基线：驱动+传感器+感知+rsp
-ros2 launch ylr1d_plan_moveit moveit.launch.py use_sim_time:=false   # 规划层 moveit（rviz:=false 可关）
-ros2 launch ylr1d_hmi hmi_moveit.launch.py                    # HMI 规划面板
-```
-
-## 3. HMI 控制流（已实测的链路）
-
-| HMI 面板 | 操作 | 链路 |
-|---|---|---|
-| hmi_moveit（MoveitPanel） | 输 part + 位姿/关节目标 + 夹爪模式，发送 | /plan/moveit/moveit_move → moveit_goal_server → moveit_bridge → /arm_move + /gripper_move → robot_driver → SDK |
-| hmi_translate（TranslatePanel） | 底盘模式/臂关节/夹爪开合 | /chassis_move /arm_move /gripper_move → robot_driver → SDK |
-| 状态显示 | 当前位姿 / 规划结果 / 关节 | /sensors/*_raw → sensor_bridge → /joint_states → ylr1d_perception → /perception/* |
-
-实测（模拟器）：MoveItMove(part=1, [0.6,…], gripper close) → OMPL 规划 8 点 →
-2 waypoint → /arm_move ×2 succeeded → /gripper_move succeeded → action SUCCEEDED "完成"。
-
-## 4. 文件清单
-
-```
-src/drivers/robot_sensors/        # 传感器层：sensor_bridge
-src/drivers/robot_driver/         # 驱动层：robot_driver + robot_sdk.hpp
-src/drivers/robot_package/        # SDK 库 + demo（armDemo/vehicleDemo 发布 /sensors/*_raw）
-src/bringup/launch/real_robot.launch.py        # 基线栈（driver+sensors+perception+rsp）
-src/bringup/launch/real_robot_moveit.launch.py # 一键：基线+moveit+HMI
-src/bringup/launch/real_robot_manual.launch.py # 一键：基线+手动面板
-src/ThirdParty/YLR1D_Controller/  # 构建复用（零代码修改）：description/perception/translate/algorithm/plan_nav/plan_moveit/hmi
-docs/real_robot_driver_design.md  # 本文档（v2）
-```
-
-## 5. 已知标定项（真机投入前）
-
-1. **kTranslateScale=5**：cmd_vel_bridge 规划速度放大（仿真标定），真机改 1.0；
-2. **轮式里程计标定**：odom twist 与命令速度差 ~8%（chassis_kinematics 参数按真机轮径/轮距修订）；
-3. **torso（arm_move part=0）**：真机无独立躯干则拒绝；若有需映射 SDK 关节；
-4. **导航**：未跑完整 nav2（无地图/amcl，场景无障碍按用户要求简单应付）；hmi_plan 面板需 nav2 就绪后才能用 NavigateToPose，当前用 hmi_translate/hmi_moveit 控制。
+**决策任务使用注意**：
+- `base_move [dx,dy,dθ]`：增量建议 **≥0.5m**——nav2 xy_goal_tolerance 0.25m，0.2m 目标会被判"立即到达"（假成功不动）；
+- `torso_aim [x,y,z]`：瞄点（map 系）须在**可达范围**——(1.0,0,0.6) 在倾角盲区（ray_error=0.065>3cm 判不可达），自检已知可达：(0.5,±0.2,0.8)/(0.8,0,1.0)/(0.3,0.3,0.6)/(0.6,0,1.2)；aim_distance 默认 0.5m，可经 `/plan/moveit/control` set_aim_distance [0.1,3.0] 调整；

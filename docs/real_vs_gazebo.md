@@ -44,6 +44,16 @@
 3. **模型一致但语义有差异**：URDF 与 SDK 模型一致（关节数/分组），但单位制与部分约定（伺服使能、权限、线程）不同——真机侧统一在驱动层适配，上层不动。
 4. **nav2/moveit 参数大部分复用**：仅时钟（use_sim_time=false）、里程计源（/odom 死推）、定位（静态 map=odom）差异，其余（costmap/DWB/BT/规划组）沿用框架配置。
 
+
+### 决策层（两套都有，真机直接复用）
+
+| 项 | Gazebo 仿真 | 真机 |
+|---|---|---|
+| 决策层 | `ylr1d_decision`（Mission → BT → plan_client）驱动完整仿真栈 | **同一 `ylr1d_decision` 原样复用**（cp 自 ros2_ylr1d_controller_ws），plan_client 桥接的 `/navigate_to_pose` + `/plan/moveit/moveit_move` 由真机栈提供 |
+| 时钟 | use_sim_time=true | use_sim_time=false（`decision.launch.py` 默认即 false） |
+| 任务 | arm_move / base_move / torso_aim 三演示任务 | 同三任务，**全部实测可用**（base_move 走导航栈——真机一键 bringup 已带导航核心） |
+| 一键启动 | `bringup_decision.launch.py`（物理+感知+定位+转译+nav2+moveit+决策层+单一决策 rviz+HMI） | `real_robot_decision.launch.py`（nav_core+moveit+决策层+决策 HMI+单一决策 rviz）；导航核心抽 `real_robot_nav_core.launch.py` 供 nav/decision 共用 |
+
 ## 四、一句话总结
 
 - **联系**：同一套决策友好接口（3 action + MoveItMove + NavigateToPose）、同一模型、同一感知/HMI/规划框架。
